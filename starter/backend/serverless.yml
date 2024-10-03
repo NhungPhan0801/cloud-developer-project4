@@ -1,0 +1,202 @@
+org: longcv2serverless
+app: aws-node-project
+service: longcv2-serverless-todo-app
+
+plugins:
+  - serverless-iam-roles-per-function
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs16.x
+  tracing:
+    lambda: true
+    apiGateway: true
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  environment:
+    TODOS_TABLE: longcv2-Todo-${self:provider.stage}
+    TODOS_CREATED_AT_INDEX: CreatedAtIndex
+    TODO_ATTACHMENTS_S3_BUCKET: longcv2-todo-bucket-${self:provider.stage}
+    SIGNED_URL_EXPIRATION: 300
+    AUTH0_CERTIFICATE: '-----BEGIN CERTIFICATE-----
+MIIDHTCCAgWgAwIBAgIJQ9hXj2qimyOTMA0GCSqGSIb3DQEBCwUAMCwxKjAoBgNV
+BAMTIWRldi02eTV1eWR5b3RrZ29xaTJnLnVzLmF1dGgwLmNvbTAeFw0yNDA2MzAw
+OTIzMTBaFw0zODAzMDkwOTIzMTBaMCwxKjAoBgNVBAMTIWRldi02eTV1eWR5b3Rr
+Z29xaTJnLnVzLmF1dGgwLmNvbTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoC
+ggEBALXPidxvIFyFU1xr0wmpFufwV08ue15ZjoneWpTzbU3swLMnUE337AJh8I1X
+M4pIHkDACAFLh0WNJzO85UI/21li+SSJ4WpOEqZg++Eyy/+7tDz/mx7Zj2qcBg3w
+QUWQOZmcHRaHagULYjzlE9xWpnPTfTT9KZ6Zpd1BCXG+Ur3NIDUvv0jRPt1fBFZ4
+s/FuHFS2tCRzDRumjxu2sFspfYeaWZRiJoL7DQfnA6nBsdmbc+lFPkiFOHjBMdGo
+nzU0pUPocMTUedZVyFi6ALgRbHnzym0L/wEjC6WE0X2Rgi4I+OTT144CQ45peI0L
+h/ykDbv9rz07wXpL397c+Pm/KOUCAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAd
+BgNVHQ4EFgQUg5IYsuvXLCsjXWJCGFhtrKOIw5UwDgYDVR0PAQH/BAQDAgKEMA0G
+CSqGSIb3DQEBCwUAA4IBAQAFHA0VLez4umIFZz9UvdXoPDGnooloQvOtK6ClYvTv
+6cJbbWFVH+TRLkN32x1/IKha05ov4WQUS15YGUaJ33sUBKwWToNcJLX2AQOpASAd
+mhOUxKuiCc64eBBJkOdnbJk6hp6re/hGuppjMUn45MZvAnQlKqSS03dxPQAIEycJ
+KAaVlR308Gg7ovuNQLBzsBdfnMWrI2L3dmfEDdGbf+ceooaz0HOzw/9la7Rl9kFi
+cKwraXrUE2e5x89dlJ/5Qs7NEpzkOwRXeuCtZWyc8d0ReiQ+nkcdsbkKeBpUph0C
+mZK/ROxomOZqWoP+MU6hMv5wUwPfWm+4bLjMpfdzCvbw
+-----END CERTIFICATE-----'
+
+functions:
+  Auth:
+    handler: src/lambda/auth/Auth0Authorizer.handler
+
+  TodosGet:
+    handler: src/lambda/http/todosGet.handler
+    events:
+      - http:
+          authorizer: Auth
+          method: get
+          path: todos
+          cors: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource: !GetAtt TodosTable.Arn
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}/index/${self:provider.environment.TODOS_CREATED_AT_INDEX}
+
+  TodoCreate:
+    handler: src/lambda/http/todoCreate.handler
+    events:
+      - http:
+          authorizer: Auth
+          method: post
+          path: todos
+          cors: true
+          request:
+            schemas:
+              application/json: ${file(src/schemas/CreateTodoRequest.json)}
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+        Resource: !GetAtt TodosTable.Arn
+
+  TodoDelete:
+    handler: src/lambda/http/todoDelete.handler
+    events:
+      - http:
+          authorizer: Auth
+          method: delete
+          path: todos/{todoId}
+          cors: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:DeleteItem
+        Resource: !GetAtt TodosTable.Arn
+
+  TodoUpdate:
+    handler: src/lambda/http/todoUpdate.handler
+    events:
+      - http:
+          authorizer: Auth
+          method: patch
+          path: todos/{todoId}
+          cors: true
+          request:
+            schemas:
+              application/json: ${file(src/schemas/UpdateTodoRequest.json)}
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+        Resource: !GetAtt TodosTable.Arn
+
+  TodoGenerateUrl:
+    handler: src/lambda/http/todoGenerateUrl.handler
+    events:
+      - http:
+          authorizer: Auth
+          method: post
+          path: todos/{todoId}/attachment
+          cors: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+        Resource: !GetAtt TodosTable.Arn
+      - Effect: Allow
+        Action:
+          - s3:PutObject
+        Resource: arn:aws:s3:::${self:provider.environment.TODO_ATTACHMENTS_S3_BUCKET}/*
+resources:
+  Resources:
+    GatewayResponseDefault4XX:
+      Type: AWS::ApiGateway::GatewayResponse
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+          gatewayresponse.header.Access-Control-Allow-Methods: "'GET,OPTIONS,POST'"
+        ResponseType: DEFAULT_4XX
+        RestApiId:
+          Ref: ApiGatewayRestApi
+    TodosTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: todoId
+            AttributeType: S
+          - AttributeName: createdAt
+            AttributeType: S
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: todoId
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
+        TableName: ${self:provider.environment.TODOS_TABLE}
+        LocalSecondaryIndexes:
+          - IndexName: ${self:provider.environment.TODOS_CREATED_AT_INDEX}
+            KeySchema:
+              - AttributeName: userId
+                KeyType: HASH
+              - AttributeName: createdAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL 
+
+    AttachmentsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.TODO_ATTACHMENTS_S3_BUCKET}
+        PublicAccessBlockConfiguration:
+          BlockPublicPolicy: false
+          RestrictPublicBuckets: false
+        CorsConfiguration:
+          CorsRules:
+            - AllowedOrigins:
+                - '*'
+              AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+                - DELETE
+                - HEAD
+              MaxAge: 3000
+
+    BucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        PolicyDocument:
+          Id: TodoAttachmentBucketPolicy
+          Version: "2012-10-17"
+          Statement:
+            - Sid: PublicReadForGetBucketObjects
+              Effect: Allow
+              Principal: '*'
+              Action: 's3:GetObject'
+              Resource: arn:aws:s3:::${self:provider.environment.TODO_ATTACHMENTS_S3_BUCKET}/*
+        Bucket: !Ref AttachmentsBucket
